@@ -1,0 +1,22 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+        "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+        "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+
+        "QuoteMonitorSchedule": "0 */15 13-21 * * 1-5",
+
+        "MarketHours__Enabled": "true",
+        "MarketHours__TimeZone": "America/New_York",
+
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_SERVICE_NAME": "portfolioapp",
+
+        "AlphaVantage__ApiKey": "<your-alphavantage-api-key>",
+        "AlphaVantage__Symbols": "MSFT,NVDA"
+    },
+    "ConnectionStrings": {
+        "PortfolioDb": "Server=(localdb)\\MSSQLLocalDB;Database=portfoliomonitor;Trusted_Connection=True;TrustServerCertificate=True"
+    }
+}
