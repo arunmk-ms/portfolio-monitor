@@ -63,3 +63,32 @@ export function directionOf(value) {
   if (value < 0) return 'down'
   return 'flat'
 }
+
+/** Placeholder for values the API genuinely does not have yet. */
+export const UNKNOWN = '—'
+
+const isNumber = (value) => typeof value === 'number' && Number.isFinite(value)
+
+export function formatMaybeCurrency(value) {
+  return isNumber(value) ? formatCurrency(value) : UNKNOWN
+}
+
+export function formatMaybePercent(value, digits = 2) {
+  return isNumber(value) ? formatPercent(value, digits) : UNKNOWN
+}
+
+export function formatMaybeSignedCurrency(value) {
+  return isNumber(value) ? formatSignedCurrency(value) : UNKNOWN
+}
+
+export function formatMaybeSignedPercent(value, digits = 2) {
+  return isNumber(value) ? formatSignedPercent(value, digits) : UNKNOWN
+}
+
+export function formatMaybeNumber(value, digits = 2) {
+  return isNumber(value) ? value.toLocaleString('en-US', { maximumFractionDigits: digits }) : UNKNOWN
+}
+
+export function formatMaybeCompactNumber(value) {
+  return isNumber(value) ? formatCompactNumber(value) : UNKNOWN
+}

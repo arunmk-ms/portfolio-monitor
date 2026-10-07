@@ -307,3 +307,34 @@ GO
 COMMIT;
 GO
 
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260918172132_AddManualHoldings'
+)
+BEGIN
+    DECLARE @var0 sysname;
+    SELECT @var0 = [d].[name]
+    FROM [sys].[default_constraints] [d]
+    INNER JOIN [sys].[columns] [c] ON [d].[parent_column_id] = [c].[column_id] AND [d].[parent_object_id] = [c].[object_id]
+    WHERE ([d].[parent_object_id] = OBJECT_ID(N'[Holdings]') AND [c].[name] = N'LastImportId');
+    IF @var0 IS NOT NULL EXEC(N'ALTER TABLE [Holdings] DROP CONSTRAINT [' + @var0 + '];');
+    ALTER TABLE [Holdings] ALTER COLUMN [LastImportId] int NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260918172132_AddManualHoldings'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20260918172132_AddManualHoldings', N'8.0.31');
+END;
+GO
+
+COMMIT;
+GO
+

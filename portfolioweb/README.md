@@ -4,9 +4,15 @@ Web UI for Portfolio Monitor. React + Vite (JavaScript), no runtime dependencies
 
 ## Status
 
-MVP dashboard for two symbols (MSFT, NVDA). Sign-in is **mocked in the browser** and market data
-is **simulated locally** — no network calls leave the app. Per `DESIGN.md`, this UI will read from
-the `portfolioapp` Web API and must never call a market-data provider directly.
+Two pages, switched by a hash route (`#/dashboard`, `#/import`) so deep links and browser
+back/forward work without a router dependency.
+
+The dashboard reads **real stored data** from the `portfolioapp` API — holdings, watchlist,
+prices, allocation, signal scores, and alert history all come from the database. Sign-in is still
+**mocked in the browser** (see below).
+
+Nothing is faked: a value the backend does not have yet renders as `—` with an explanation,
+rather than a zero or a placeholder number.
 
 ## Run
 
@@ -18,6 +24,44 @@ npm run lint
 ```
 
 Sign in with `demo` / `portfolio123`.
+
+The dashboard needs the API. In a second terminal:
+
+```bash
+cd portfolioapp
+dotnet build
+cd bin/Debug/net8.0
+func host start --port 7234
+```
+
+The dev server proxies `/api` to `http://localhost:7234`, so the browser stays same-origin and no
+CORS configuration is needed. Copy `.env.example` to `.env.local` to point at a different backend.
+
+Note: `func start` can fail from the project folder with "Expected 1 .csproj but found 2" because
+of a generated `obj/.../WorkerExtensions.csproj`. Running it from `bin/Debug/net8.0` avoids that.
+
+## Where the data comes from
+
+| Panel | Source |
+| --- | --- |
+| Summary | `Holdings` + latest `PriceSnapshots`, open `Signals` |
+| Prices | Latest `PriceSnapshots` per symbol, falling back to the price the broker file carried |
+| Holdings | `Holdings` joined to `Accounts` |
+| Allocation | Computed from holdings; limits come from `AllocationAbove` rules |
+| Watchlist | `WatchlistSymbols` with thresholds derived from `PriceBelow` / `PriceAbove` rules |
+| Opportunity scores | Open `Signals` — score and facts as the rule engine stored them |
+| Alert history | `Alerts` joined to `Signals` |
+
+`GET /api/dashboard` returns all of it as one snapshot. That is deliberate: a dashboard whose
+panels are fetched separately can render totals from one instant beside prices from another.
+
+**Price honesty.** Every quote records whether it came from the market-data provider or from a
+broker import, and the header reports the *weakest* source present. A single import-priced symbol
+keeps the whole board labelled "Prices from import" rather than implying live data.
+
+**Review actions.** Acknowledging or ignoring a signal posts to
+`/api/signals/{id}/status` and then re-reads the snapshot, because the server also acknowledges the
+linked alerts — patching locally would leave the alert history disagreeing with the signal.
 
 ## Sign-in
 
@@ -46,14 +90,36 @@ each refresh and re-runs the threshold rules, so refreshing produces genuinely n
 deduplicates signals: a standing condition raises one alert, and only re-alerts after the condition
 clears and crosses again.
 
-## Pages
-
-Two pages, switched by a hash route (`#/dashboard`, `#/import`) so deep links and browser
-back/forward work without a router dependency.
-
 ## Import
 
-`#/import` accepts a broker positions export (`.csv`) by drag-and-drop or file picker.
+`#/import` has two modes: **Upload CSV** and **Add manually**.
+
+### Add manually
+
+For tracking a few positions without exporting anything from a broker. Only **symbol** and
+**shares** are required; average cost and account are optional.
+
+- The symbol is normalised (`msft` → `MSFT`) and must be a tradable ticker — cash sweeps like
+  `FCASH**` are rejected, because the monitoring run could never price them.
+- Re-adding a symbol you already hold **updates** its share count rather than creating a
+  duplicate, keyed on (account, symbol) exactly like the CSV import.
+- Leaving average cost blank on an update **keeps** the cost you entered before. Correcting a
+  share count should not silently destroy your own cost basis.
+- Blank average cost on a new position means "not tracked": unrealized gain reads as unknown
+  instead of being guessed.
+- No market price is invented. A manual position has no value until the monitoring run fetches a
+  quote for it.
+- The symbol is added to the watchlist (`Source = Manual`) so it starts being monitored.
+- Positions can be removed, which deletes the holding but **keeps** the watchlist entry — selling
+  out of a position is not a reason to stop tracking the stock.
+
+Manually entered rows are stored with a null `LastImportId` rather than a synthetic import
+record, so the import audit trail keeps meaning only what it says. The manage table badges each
+row **Manual** or **Imported**.
+
+### Upload CSV
+
+Accepts a broker positions export (`.csv`) by drag-and-drop or file picker.
 
 The file is previewed locally first — parsed in the browser so you can check it before anything
 leaves the page. Choosing **Save to portfolio** uploads the original file to the backend, which
@@ -91,75 +157,55 @@ value.
 
 ### Running against the backend
 
-```bash
-# terminal 1 - API (see portfolioapp/README.md for database setup)
-cd portfolioapp
-func start --port 7234
-
-# terminal 2 - UI
-cd portfolioweb
-npm run dev
-```
-
-The dev server proxies `/api` to `http://localhost:7234`, so the browser stays same-origin and no
-CORS configuration is needed. Copy `.env.example` to `.env.local` to point at a different backend.
-
-Note: the Functions host may fail to start from the project folder with "Expected 1 .csproj but
-found 2" because of a generated `obj/.../WorkerExtensions.csproj`. If that happens, run
-`dotnet build` then `func host start --port 7234` from `bin/Debug/net8.0`.
+See "Run" above — the dashboard requires the API, so both processes are needed.
 
 ## What the dashboard shows
 
 | Section | Contents |
 | --- | --- |
 | Summary | Portfolio value, day change, unrealized gain, open signal count |
-| Prices | Last price, day change, day/52-week range, volume vs average, RSI 14, SMA 50/200 |
+| Prices | Last price, day change, day range, volume, RSI 14, SMA 50/200, and the source of each quote |
 | Holdings | Quantity, average cost, price, day change, market value, unrealized gain, weight |
-| Allocation | Actual vs target weight per position with drift against a 5% limit |
-| Watchlist | Buy/sell thresholds, distance to each threshold, rule state, opportunity score |
-| Opportunity scores | 0–100 score per symbol with the factors behind it (value, momentum, trend, volume) |
-| Alert history | Alert timeline joined to its signal: direction, score, structured facts, rule version, acknowledgement |
+| Allocation | Share of portfolio value per position, against limits from allocation rules |
+| Watchlist | Rule-derived buy/sell thresholds, distance to each, rule state, opportunity score |
+| Opportunity scores | Open signals with the facts the rule engine stored, plus acknowledge/ignore |
+| Alert history | Alerts joined to their signal: direction, score, rule version, delivery and acknowledgement |
 
-The header surfaces market state and data quality (for example "Delayed 15 min") so stale or
-delayed data is always visible.
+Indicators (RSI, moving averages) need price history, so they read `—` until the monitoring run
+has stored enough snapshots. The panel says so rather than leaving a blank.
 
 ## Layout
 
 ```text
 src/
-  data/portfolio.js     hardcoded seed quotes, holdings, watchlist, signals, alerts
-  lib/api.js            mock Web API: snapshot fetch, price simulation, rule engine
-  lib/portfolioApi.js   real portfolioapp API client (CSV import)
+  lib/portfolioApi.js   portfolioapp API client (dashboard read, CSV import, signal review)
   lib/auth.js           mock authentication and session storage
   lib/csv.js            RFC 4180 CSV reader and broker amount/percent parsing
   lib/importPositions.js  CSV -> normalized holdings, validation, preview payload
-  lib/format.js         currency/percent/date formatting helpers
-  lib/derive.js         snapshot -> positions, totals, watchlist rows, score breakdowns
+  lib/format.js         currency/percent/date formatting, including "unknown" handling
+  lib/derive.js         API snapshot -> positions, totals, watchlist rows, score breakdowns
   hooks/useSession.js       sign in/out, session restore and expiry
   hooks/usePortfolioData.js snapshot state, manual refresh, auto-refresh timer
   hooks/useHashRoute.js     two-page hash routing
   components/           Header, Nav, LoginScreen, MarketStatus, RefreshControls,
-                        ImportPage, SummaryCards, PriceBoard, HoldingsTable,
-                        AllocationPanel, WatchlistPanel, ScorePanel, AlertHistory, Delta
+                        ImportPage, ManualEntry, SummaryCards, PriceBoard, HoldingsTable,
+                        AllocationPanel, WatchlistPanel, ScorePanel, AlertHistory,
+                        EmptyState, Delta
   App.jsx               auth gate, routing, page composition
   App.css               styles
 ```
 
-## Replacing the mock backend
-
-CSV import is wired to the real API. Market data is not yet: `src/lib/api.js` is still the seam for
-that. `fetchSnapshot()` returns one timestamped snapshot containing quotes, holdings, watchlist,
-signals, and alerts; point it at the real endpoint and nothing else changes. `src/lib/derive.js` is
-pure — the same snapshot always renders the same view — and the components take everything through
-props.
-
-Seed shapes in `src/data/portfolio.js` match the core entities in `DESIGN.md` (`Holding`,
-`WatchRule`, `PriceSnapshot`, `Signal`, `Alert`).
+`src/lib/derive.js` is pure — the same snapshot always renders the same view — and every component
+takes its data through props, so the API shape is the only thing that has to change when the
+backend evolves.
 
 ## Not implemented yet
 
-Real authentication, reading stored holdings back into the dashboard (it still renders seed data),
-symbol/holding/threshold management, signal detail route, review actions (acknowledge, ignore,
-follow-up), notification preferences, and tax lots.
+Real authentication (`src/lib/auth.js` is the seam), rule editing from the UI (the API supports
+`POST /api/rules`, but there is no screen yet), a dedicated signal-detail route, "mark for
+follow-up" as a third review action, notification preferences, and tax lots.
+
+Live prices depend on the monitoring run: until it stores snapshots, the dashboard falls back to
+the prices carried in the imported file and labels them as such.
 
 Signals are recommendations for review, not orders.

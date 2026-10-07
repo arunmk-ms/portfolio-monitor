@@ -111,7 +111,7 @@ namespace portfolioapp.Data.Migrations
                     b.Property<bool>("IsMonitorable")
                         .HasColumnType("bit");
 
-                    b.Property<int>("LastImportId")
+                    b.Property<int?>("LastImportId")
                         .HasColumnType("int");
 
                     b.Property<decimal?>("LastPrice")
@@ -394,8 +394,7 @@ namespace portfolioapp.Data.Migrations
                     b.HasOne("PortfolioApp.Models.PortfolioImport", "LastImport")
                         .WithMany("Holdings")
                         .HasForeignKey("LastImportId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Account");
 

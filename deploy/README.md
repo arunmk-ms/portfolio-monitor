@@ -13,11 +13,15 @@ rather than creating duplicates.
 | Storage account (Standard_LRS) | Required by the Functions runtime | ~$1 |
 | Log Analytics + Application Insights | Telemetry; first 5 GB/month are free | ~$0 |
 | Azure SQL Database, Basic (5 DTU, 2 GB) | `PortfolioDb` | ~$5 |
-| Function App, Flex Consumption | `portfolioapp` timer trigger | ~$0–2 |
+| Function App, Flex Consumption | Timer + health + CSV import endpoints | ~$0–2 |
 | Static Web App, Free tier | `portfolioweb` | $0 |
 | Consumption budget | Alert-only guard rail, default $30 | $0 |
 
 Expect roughly **$6–10/month**, comfortably inside a $150 cap.
+
+The Free Static Web App tier cannot proxy to your own Functions app — "bring your own API" is a
+Standard-plan ($9/month) feature. This script therefore uses CORS plus a function key instead. See
+[Security status](#security-status--read-before-sharing-the-url) for the trade-off that entails.
 
 ## Prerequisites
 
@@ -127,6 +131,33 @@ hostname. But treat it as private, and do not put real brokerage data behind it 
 is real. The realistic fix is Entra Easy Auth on the Function App with a proper sign-in in the SPA,
 which also removes the need for the embedded key.
 
+### Adding a login in the meantime
+
+There is no user store, so a "login" is an entry in the `DEMO_USERS` array in
+`portfolioweb/src/lib/auth.js`. To add one, edit that array and redeploy the front end only:
+
+```powershell
+./Deploy-PortfolioMonitor.ps1 -SubscriptionId '...' `
+    -SkipInfrastructure -SkipDatabase -SkipFunctionApp -SkipBudget
+```
+
+Be clear about what this does and does not do. The credentials are compiled into the JavaScript
+bundle and checked in the browser, so they are readable by anyone who loads the page and trivially
+bypassed in developer tools. Treat the array as a convenience for separating *your own* sessions,
+not as an access control boundary, and never reuse a password from anywhere else in it.
+
+When you are ready to replace it, Static Web Apps has built-in GitHub and Microsoft Entra ID
+authentication on **all plans, including Free**. Logins then become portal invitations under
+*Role Management* rather than code changes, with no passwords to store. Note that the preconfigured
+Entra provider admits any Microsoft account, so route rules must require a custom role:
+
+```json
+{ "route": "/*", "allowedRoles": ["portfolio"] }
+```
+
+That gates the site, not the API — the Function App is a separate resource that SWA does not front
+on the Free plan, so the function key would remain the only thing protecting `/api`.
+
 ## Verification
 
 The script polls `GET /api/health` after publishing and prints the result, so a deployment whose
@@ -166,6 +197,30 @@ script re-detects it each time, so rerun with `-SkipFunctionApp -SkipWeb`, or pa
 
 **`Region '<x>' does not offer Flex Consumption`** — the error lists the regions that do. Pick one
 and pass it as `-Location`.
+
+**`Can't determine Project to build. Expected 1 .csproj or .fsproj but found 2`** — the Functions
+Worker SDK generates an internal `WorkerExtensions.csproj` under `portfolioapp/obj/` during any
+build, including `dotnet test`. Core Tools scans recursively and refuses to guess between the two.
+The script now deletes those generated copies before publishing, and they are recreated by the
+build that publish performs. If you hit this running `func` by hand, clear them first:
+
+```powershell
+Get-ChildItem portfolioapp\obj -Recurse -Directory -Filter WorkerExtensions |
+    Remove-Item -Recurse -Force
+```
+
+**`Upgrade your app to .NET 10 as .NET 8 will reach EOL on 2026-11-09`** — informational, not a
+failure. The app targets `net8.0` and deploys fine, but plan the upgrade before that date to stay
+on a supported runtime.
+
+**`LocationNotAvailableForResourceType` for `Microsoft.Web/staticSites`** — Static Web Apps runs in
+only five regions (`centralus`, `eastus2`, `westus2`, `westeurope`, `eastasia`), far fewer than
+Functions or SQL. The script derives `-StaticWebAppLocation` from `-Location` automatically, so
+leave it unset. Do not "fix" this by adding your region to the parameter's `ValidateSet` — Azure
+still rejects it, and widening the set only removes the check that would have caught it early.
+Overriding it with one of the five supported values is fine. The choice has no effect on page-load
+speed, because static content is served from Azure's global edge network no matter which region
+holds the app.
 
 **Budget creation is skipped** — creating budgets needs billing-writer rights, which some
 subscriptions withhold. Everything else still deploys; add the budget under Cost Management →

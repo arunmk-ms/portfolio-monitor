@@ -59,6 +59,7 @@ var host = new HostBuilder()
         services.AddScoped<IQuoteStore, SqlQuoteStore>();
         services.AddScoped<IPositionsCsvParser, FidelityPositionsCsvParser>();
         services.AddScoped<IPortfolioImportService, PortfolioImportService>();
+        services.AddScoped<IManualHoldingService, ManualHoldingService>();
         services.AddScoped<IWatchlistProvider, WatchlistProvider>();
 
         services.AddSingleton<IRuleEngine, RuleEngine>();

@@ -127,10 +127,14 @@ public sealed class PortfolioDbContext : DbContext
             .OnDelete(DeleteBehavior.Cascade);
 
         // Keep import history immutable: deleting an audit row must not silently drop holdings.
+        // The key is optional because a manually entered holding has no originating import.
         holding.HasOne(e => e.LastImport)
             .WithMany(i => i.Holdings)
             .HasForeignKey(e => e.LastImportId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
+
+        holding.Ignore(e => e.IsManual);
 
         var watchlist = modelBuilder.Entity<WatchlistSymbol>();
         watchlist.ToTable("WatchlistSymbols");

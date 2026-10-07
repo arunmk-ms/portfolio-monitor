@@ -18,8 +18,80 @@ snapshots, evaluating rules, and sending alerts are the follow-up stages.
 | `Services/PortfolioImportService.cs` | Upserts accounts, holdings, and watchlist entries |
 | `Services/WatchlistProvider.cs` | Resolves monitored symbols from the DB |
 | `Functions/PortfolioUploadFunction.cs` | `POST /api/portfolio/import` |
+| `Functions/PortfolioApiFunction.cs` | Read APIs and rule management for the web UI |
 | `Functions/HealthCheckFunction.cs` | `GET /api/health` readiness probe |
+| `Services/IndicatorCalculator.cs` | Moving averages, RSI, allocation (pure functions) |
+| `Services/RuleEngine.cs` | Evaluates versioned watch rules deterministically |
+| `Services/SqlSignalStore.cs` | Raises, suppresses, and resolves signals |
+| `Services/PortfolioAnalysisService.cs` | Orchestrates indicators, rules, signals, alerts |
 | `Data/Scripts/migrate.sql` | Idempotent migration script for deployments |
+
+## Decision support
+
+A monitoring run does two things: collect quotes, then evaluate them.
+
+```text
+quotes -> PriceSnapshot -> indicators + allocation -> WatchRule -> Signal -> Alert
+```
+
+### Rules are typed, not free-form
+
+`WatchRule` uses a closed set of `RuleType` values (price thresholds, percent move from average
+cost, RSI, moving average, allocation limits) rather than a stored expression language. Rules
+have to be deterministic and explainable after the fact, and an expression string is neither
+easy to validate nor safe to evaluate.
+
+Every rule carries a `Version`, which is **copied onto each signal it raises**. Editing a rule
+later therefore cannot rewrite the meaning of an alert that already fired. The API bumps the
+version automatically when a change affects evaluation (type, threshold, period, or symbol).
+
+### Duplicate suppression, and why "no data" is not "all clear"
+
+A signal stays `Open` while its condition holds, so a price resting just below a threshold
+alerts **once**, not on every run. When the condition stops holding the signal is `Resolved`,
+which re-arms the rule.
+
+Rule evaluation has three outcomes, not two:
+
+| Outcome | Meaning | Effect on an open signal |
+| --- | --- | --- |
+| `Triggered` | Condition holds | Raise, or suppress if already open |
+| `NotTriggered` | Condition does not hold | Resolve it — the rule re-arms |
+| `Skipped` | Could not evaluate (no cost basis, too little history) | **Left alone** |
+
+The third state matters: absence of data is not evidence a condition cleared. Collapsing
+`Skipped` into `NotTriggered` would resolve a signal the moment history ran short and re-alert
+the user as soon as it returned.
+
+### Alerts
+
+Signals fan out to `INotificationChannel` implementations, each recording its own `Alert` row.
+A delivery failure is stored on the alert and never discards the signal. Only the logging
+channel ships today — it exports through OpenTelemetry, so the path is complete end to end
+without requiring email credentials. Email and push are deliberately deferred; adding one means
+registering another channel, and nothing upstream changes.
+
+### API
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/signals[?all=true]` | Open signals (or full history) with their facts |
+| `POST /api/signals/{id}/status?status=Acknowledged\|Ignored` | Review actions |
+| `GET /api/holdings` | Positions with latest price, market value, allocation |
+| `GET /api/rules` | Configured rules |
+| `POST /api/rules` | Create a rule, or update one by passing `id` |
+| `POST /api/portfolio/import` | Upload a broker positions export |
+| `GET /api/health` | Readiness probe |
+
+Creating a rule:
+
+```json
+{ "name": "MSFT oversold", "symbol": "MSFT", "ruleType": "RsiBelow",
+  "threshold": 30, "period": 14, "direction": "BuyCandidate" }
+```
+
+Signals are recommendations for review, never orders.
+
 | `Configuration/MarketHoursOptions.cs` | Trading-session settings |
 | `Services/AlphaVantageClient.cs` | Typed `HttpClient` for `GLOBAL_QUOTE`, plus response mapping |
 | `Services/AlphaVantageException.cs` | Provider-level failure, distinguishes throttling from other errors |
@@ -56,17 +128,35 @@ which change only once per trading day. Realtime and 15-minute delayed feeds are
 [premium](https://www.alphavantage.co/premium/) (from $49.99/month, 75 requests/min, no daily cap)
 and need a separate data entitlement.
 
-| Tier | How often data changes | Suggested `QuoteMonitorSchedule` | `MarketHours__Enabled` | Calls/day (2 symbols) |
+| Tier | How often data changes | Suggested `QuoteMonitorSchedule` | `MarketHours__Enabled` | Calls/day (10 symbols) |
 | --- | --- | --- | --- | --- |
-| Free (EOD) | Once per day | `0 30 21 * * 1-5` (once, after close) | `false` | 2 |
-| Premium, 15-min delayed | Every 15 min | `0 */15 13-21 * * 1-5` | `true` | 52 |
-| Premium, realtime | Continuous | `0 */5 13-21 * * 1-5` | `true` | 156 |
+| Free (EOD) | Once per day | `0 30 21 * * 1-5` (once, after close) | `false` | 10 |
+| Premium, 15-min delayed | Every 15 min | `0 */15 13-21 * * 1-5` | `true` | 260 |
+| Premium, realtime | Continuous | `0 */5 13-21 * * 1-5` | `true` | 780 |
 
 On the free tier the market-hours guard must be **disabled**, because the only useful poll is
 after the close — that is the one moment the daily value is final.
 
-For reference, the previous `0 */5 * * * *` (every 5 minutes, around the clock) was 576
-calls/day: 23x the free-tier allowance, and all but one per day returned identical data.
+A 10-symbol portfolio polled once daily is 10 requests, which fits inside the free tier's 25/day
+with room for a restart or a past-due catch-up run. Anything faster than daily needs premium.
+
+### One request per symbol is fine at this size
+
+`GLOBAL_QUOTE` accepts a single symbol per request, so a run costs one request per monitored
+symbol. Alpha Vantage does offer
+[`REALTIME_BULK_QUOTES`](https://www.alphavantage.co/documentation/) (100 symbols per request),
+but it is premium-only and unnecessary here: a measured 10-symbol run completes in **~11
+seconds**, of which ~9s is the deliberate `DelayBetweenRequestsMilliseconds` spacing. That is a
+~1% duty cycle against a 15-minute schedule.
+
+Two things would change the calculation:
+
+- **Symbol count past roughly 30.** Run time grows linearly (~1s per extra symbol at the default
+  spacing), and eventually approaches the function timeout.
+- **A sub-minute schedule.** Per-symbol requests would start competing with the per-minute rate
+  limit.
+
+Neither applies at 8-10 symbols on a 5-minute-or-slower schedule.
 
 ### Holidays need annual maintenance
 
@@ -348,8 +438,10 @@ dotnet test portfolioapp.Tests
 - **API key redaction** — Alpha Vantage only accepts the key as a query-string parameter, and
   the default `HttpClient` logging writes the full request URI. `Program.cs` raises those two
   logging categories to `Warning` so the key is never written to logs or exported telemetry.
-- **Rate limits** — the free tier allows 25 requests/day. Match the interval to your tier using
-  the table above, or the run will exhaust the daily budget before the session ends.
+- **Rate limits** — the free tier allows 25 requests/day and a run costs one request per
+  monitored symbol. Match the interval to your tier and symbol count using the table above.
+- **Run duration scales with symbol count** — roughly `DelayBetweenRequestsMilliseconds` per
+  extra symbol. Measured at ~11s for 10 symbols; lower the spacing if you add many more.
 - **Delayed data** — free-tier quotes are end-of-day, so `LatestTradingDay` is carried on every
   quote and must be shown wherever a price is displayed.
 
@@ -366,8 +458,9 @@ dotnet test portfolioapp.Tests
 | 5 | Match the schedule to your data tier | See [Picking an interval](#picking-an-interval-match-your-data-tier) — the free tier is 25 requests/day |
 | 6 | Point `AzureWebJobsStorage` at a real storage account | The timer stores schedule state and its singleton lock there |
 | 7 | Set `APPLICATIONINSIGHTS_CONNECTION_STRING` or `OTEL_EXPORTER_OTLP_ENDPOINT` | Without one, telemetry is emitted nowhere |
-| 8 | Configure CORS for the web UI origin | The browser cannot call `POST /api/portfolio/import` otherwise |
+| 8 | Configure CORS for the web UI origin | The browser cannot call the API otherwise |
 | 9 | Verify `GET /api/health` returns 200 | Confirms config, connectivity, and migrations in one call |
+| 10 | Create at least one watch rule | With no rules the app collects quotes but raises no signals |
 
 ```powershell
 func azure functionapp publish <function-app-name>

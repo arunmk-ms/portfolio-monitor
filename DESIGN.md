@@ -14,6 +14,12 @@ Monitor a personal portfolio and watchlist, evaluate predefined buy/sell strateg
 - Provide review actions: acknowledge, ignore, or mark for follow-up.
 - Read data through the backend API. It must not call the market-data provider directly.
 
+Status: the dashboard reads everything from `GET /api/dashboard`, and acknowledge/ignore post to
+`POST /api/signals/{id}/status`. Positions can be added by hand (`POST /api/holdings`) as well as
+imported from a broker file. Still to do: editing rules and thresholds from the UI, a "follow-up"
+review state, notification preferences, and tax lots. Authentication is mocked in the browser and
+must be replaced before the UI is exposed to anyone.
+
 ### `portfolioapp` - Azure Functions app
 
 - Run on a timer during market hours, initially every 1-5 minutes.
@@ -30,17 +36,16 @@ Monitor a personal portfolio and watchlist, evaluate predefined buy/sell strateg
 | # | Responsibility | Status | Gap |
 | --- | --- | --- | --- |
 | 1 | Timer during market hours, every 1-5 min | Done | Interval is tier-bound, not code-bound |
-| 2 | Fetch quotes **in batches** | Partial | One request per symbol; `REALTIME_BULK_QUOTES` (premium, 100 symbols/request) unused |
+| 2 | Fetch quotes **in batches** | Accepted as-is | One request per symbol. At the planned 8-10 symbols this is ~11s per run, so bulk fetching is not worth a premium dependency. Revisit past ~30 symbols. |
 | 3 | Slower-changing data (fundamentals, news, earnings, dividends) | Not started | No second timer, no `MarketEvent` |
-| 4 | Technical indicators and allocation | Not started | No RSI/moving averages; allocation never computed |
-| 5 | Evaluate versioned, deterministic rules | Not started | No `WatchRule`; nothing consumes the stored snapshots |
-| 6 | Persist signals, suppress duplicates until reset | Not started | No `Signal`; quote-level dedup exists but is unrelated |
-| 7 | Send email/push notifications | Not started | No `Alert`, no channel configured |
-| 8 | Expose APIs used by the web UI | Partial | Only `POST /portfolio/import` and `GET /health`; no read endpoints |
+| 4 | Technical indicators and allocation | Done | RSI, moving averages, weighted cost basis, allocation |
+| 5 | Evaluate versioned, deterministic rules | Done | `WatchRule` + `RuleEngine`; version snapshotted onto each signal |
+| 6 | Persist signals, suppress duplicates until reset | Done | Open signal suppresses repeats; clearing the condition re-arms the rule |
+| 7 | Send email/push notifications | Deferred by choice | `Alert` is persisted and dispatched through `INotificationChannel`; only the log channel is wired. Adding email means registering one more channel. |
+| 8 | Expose APIs used by the web UI | Done | Signals, holdings, rules, import, health |
 | 9 | AI explanation of signals | Not started | Explicitly optional (Phase 3) |
 
-Items 4-7 form the critical path: until they exist the app collects and stores data but never
-produces a recommendation, which is the product's stated purpose.
+Remaining work is item 3 and item 9. Items 2 and 7 are deliberate decisions, not gaps.
 
 ## MVP Architecture
 
@@ -81,11 +86,11 @@ Alert         signalId, channel, sentAt, acknowledgedAt
 | Entity | Status | Notes |
 | --- | --- | --- |
 | `PriceSnapshot` | Done | Written each monitoring run; unchanged quotes are not re-stored |
-| `Holding` | Done | Plus `Account`, `PortfolioImport`, `WatchlistSymbol` from CSV upload |
+| `Holding` | Done | Plus `Account`, `PortfolioImport`, `WatchlistSymbol` from CSV upload. Also entered by hand via `POST /api/holdings`; manual rows carry a null `LastImportId` so the import audit trail stays truthful |
+| `WatchRule` | Done | Typed conditions, versioned; version bumps when behaviour changes |
+| `Signal` | Done | Open until the condition clears; carries the facts that produced it |
+| `Alert` | Done | Persisted per channel; failures recorded rather than discarded |
 | `TaxLot` | Pending | Not in the positions export; needs a lot-level file or manual entry |
-| `WatchRule` | Pending | Blocks the rule engine and every alert |
-| `Signal` | Pending | Depends on `WatchRule` |
-| `Alert` | Pending | Depends on `Signal`; no notification channel wired yet |
 | `MarketEvent` | Pending | Phase 2 (earnings/dividend awareness) |
 
 Single-user for now: `Holding.userId` is deferred until authentication exists. Accounts are
@@ -116,11 +121,20 @@ Rules should produce `BUY_CANDIDATE`, `SELL_CANDIDATE`, `REBALANCE`, or `INFORMA
 
 ## Web Screens
 
-- **Dashboard:** portfolio value, allocation, open signals, and market status.
-- **Watchlist:** symbol, price, change, rule state, and opportunity score.
-- **Signal detail:** why it triggered, supporting facts, risks/events, and alert history.
-- **Portfolio:** holdings, cost basis, tax lots, and allocation drift.
-- **Rules and settings:** strategy conditions, notification channels, and provider status.
+- **Dashboard:** portfolio value, allocation, open signals, and market status. *Built* — also
+  carries prices, holdings, watchlist, scores, and alert history, and is the only read surface
+  today.
+- **Watchlist:** symbol, price, change, rule state, and opportunity score. *Built* as a dashboard
+  panel rather than a separate screen.
+- **Signal detail:** why it triggered, supporting facts, risks/events, and alert history. *Partly
+  built* — the facts behind each open signal appear inline on the dashboard; there is no dedicated
+  route.
+- **Portfolio:** holdings, cost basis, tax lots, and allocation drift. *Partly built* — holdings
+  and cost basis are on the dashboard; tax lots are not modelled yet.
+- **Import:** upload a broker positions export, preview it, then store it — or add positions by
+  hand with just a symbol and share count. *Built.*
+- **Rules and settings:** strategy conditions, notification channels, and provider status. *Not
+  built* — the API supports reading and writing rules, but no screen uses it.
 
 ## Delivery Phases
 

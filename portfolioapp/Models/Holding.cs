@@ -52,8 +52,15 @@ public sealed class Holding
 
     public DateTimeOffset UpdatedAt { get; set; }
 
-    /// <summary>The import that last touched this row.</summary>
-    public int LastImportId { get; set; }
+    /// <summary>
+    /// The import that last touched this row, or <c>null</c> for a holding entered by hand.
+    /// Optional because manual entry has no originating file, and inventing a placeholder import
+    /// would corrupt the audit trail this column exists to provide.
+    /// </summary>
+    public int? LastImportId { get; set; }
 
     public PortfolioImport? LastImport { get; set; }
+
+    /// <summary>True when the position was typed in rather than imported from a broker file.</summary>
+    public bool IsManual => LastImportId is null;
 }

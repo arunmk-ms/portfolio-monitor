@@ -44,11 +44,13 @@ param(
     [string]$ResourceGroup = 'rg-portfolio-monitor',
 
     # Must be a Flex Consumption region; the script validates this and lists alternatives.
-    [string]$Location = 'eastus2',
+    [string]$Location = 'australiaeast',
 
-    # Static Web Apps is available in a smaller set of regions than everything else.
-    [ValidateSet('westus2', 'centralus', 'eastus2', 'westeurope', 'eastasia')]
-    [string]$StaticWebAppLocation = 'eastus2',
+    # Static Web Apps exists in only a handful of regions — far fewer than Functions or SQL. Do not
+    # widen this list to match -Location: Azure rejects anything outside it. Leave the value unset
+    # and the script picks the closest supported region for you.
+    [ValidateSet('centralus', 'eastus2', 'westus2', 'westeurope', 'eastasia')]
+    [string]$StaticWebAppLocation,
 
     [ValidatePattern('^[a-z][a-z0-9]{2,11}$')]
     [string]$NamePrefix = 'portfolio',
@@ -211,6 +213,38 @@ function Get-PublicIpAddress {
     throw 'Unable to detect this machine''s public IP address. Pass -ClientIpAddress explicitly.'
 }
 
+<#
+    Creates a SQL firewall rule, or updates it when one of that name already exists.
+
+    This matters on a re-run from a different network or after a DHCP lease change: `create` fails
+    on a duplicate rule name, and simply ignoring that error would leave the stale address in place.
+    The failure would then resurface much later as an opaque login error when migrations run, with
+    nothing pointing back at the firewall.
+#>
+function Set-SqlFirewallRule {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$StartIp,
+        [Parameter(Mandatory)][string]$EndIp
+    )
+
+    # Invoke-Az returns an empty string on success with --output none, and $null when it failed and
+    # errors were ignored, so this distinguishes the two.
+    $created = Invoke-Az -IgnoreErrors -Arguments @(
+        'sql', 'server', 'firewall-rule', 'create',
+        '--resource-group', $ResourceGroup, '--server', $sqlServerName,
+        '--name', $Name,
+        '--start-ip-address', $StartIp, '--end-ip-address', $EndIp, '--output', 'none')
+
+    if ($null -ne $created) { return }
+
+    [void](Invoke-Az -Arguments @(
+            'sql', 'server', 'firewall-rule', 'update',
+            '--resource-group', $ResourceGroup, '--server', $sqlServerName,
+            '--name', $Name,
+            '--start-ip-address', $StartIp, '--end-ip-address', $EndIp, '--output', 'none'))
+}
+
 # ---------------------------------------------------------------------------------------------
 # Deterministic resource names
 # ---------------------------------------------------------------------------------------------
@@ -266,6 +300,21 @@ Write-Detail "Tenant       : $($account.tenantId)"
 Write-Detail "Signed in as : $signedInUser"
 
 if (-not $BudgetAlertEmail) { $BudgetAlertEmail = $signedInUser }
+
+# Static Web Apps is unavailable in most regions, including australiaeast, so it cannot simply
+# follow -Location. Map to the nearest supported one. This only affects where the app's metadata
+# lives: static content is served from Azure's global edge network regardless, so a "distant"
+# region here costs nothing in page-load latency.
+if (-not $StaticWebAppLocation) {
+    $StaticWebAppLocation = switch -Regex ($Location.ToLowerInvariant()) {
+        '^(australia|.*asia|japan|korea|.*india|china|uae|qatar|israel)' { 'eastasia'; break }
+        '^(.*europe|uk|france|germany|switzerland|norway|sweden|poland|italy|spain|southafrica)' { 'westeurope'; break }
+        '^west(us|centralus)' { 'westus2'; break }
+        '^(central|northcentral|southcentral)us' { 'centralus'; break }
+        default { 'eastus2' }
+    }
+    Write-Detail "Static Web Apps is not offered in every region; using '$StaticWebAppLocation' as the closest supported one."
+}
 
 # The object ID is needed to make the signed-in user the Entra admin of the SQL server.
 $signedInUserObjectId = Invoke-Az -IgnoreErrors -Arguments @('ad', 'signed-in-user', 'show', '--query', 'id', '--output', 'tsv')
@@ -403,18 +452,10 @@ else {
 
     # Start and end 0.0.0.0 is the documented sentinel for "allow other Azure services", which is
     # how the Function App reaches the server without a virtual network.
-    [void](Invoke-Az -IgnoreErrors -Arguments @(
-            'sql', 'server', 'firewall-rule', 'create',
-            '--resource-group', $ResourceGroup, '--server', $sqlServerName,
-            '--name', 'AllowAzureServices',
-            '--start-ip-address', '0.0.0.0', '--end-ip-address', '0.0.0.0', '--output', 'none'))
+    Set-SqlFirewallRule -Name 'AllowAzureServices' -StartIp '0.0.0.0' -EndIp '0.0.0.0'
 
     if (-not $ClientIpAddress) { $ClientIpAddress = Get-PublicIpAddress }
-    [void](Invoke-Az -IgnoreErrors -Arguments @(
-            'sql', 'server', 'firewall-rule', 'create',
-            '--resource-group', $ResourceGroup, '--server', $sqlServerName,
-            '--name', 'DeploymentClient',
-            '--start-ip-address', $ClientIpAddress, '--end-ip-address', $ClientIpAddress, '--output', 'none'))
+    Set-SqlFirewallRule -Name 'DeploymentClient' -StartIp $ClientIpAddress -EndIp $ClientIpAddress
     Write-Detail "Allowed Azure services and this machine ($ClientIpAddress)."
 
     Write-Step "Creating SQL database '$sqlDatabaseName' (Basic, 5 DTU / 2 GB)"
@@ -585,15 +626,28 @@ else {
     Write-Step "Granting '$functionAppName' read/write access to the database"
 
     # The contained database user is named after the app, which is how Azure SQL resolves a
-    # system-assigned identity through FROM EXTERNAL PROVIDER. QUOTENAME keeps the dynamic SQL safe.
+    # system-assigned identity through FROM EXTERNAL PROVIDER.
+    #
+    # The statement is built into a variable before execution rather than concatenated inside
+    # EXEC(...). T-SQL only allows literals and variables to be concatenated in that position, so a
+    # QUOTENAME() call there is a syntax error. Assigning with SET evaluates it first, and
+    # sp_executesql then receives a finished string. QUOTENAME still does the escaping that keeps
+    # the dynamic SQL safe.
     $grantSql = @"
 DECLARE @principal sysname = N'$($functionAppName.Replace("'", "''"))';
+DECLARE @sql nvarchar(max);
 
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = @principal)
-    EXEC('CREATE USER ' + QUOTENAME(@principal) + ' FROM EXTERNAL PROVIDER;');
+BEGIN
+    SET @sql = N'CREATE USER ' + QUOTENAME(@principal) + N' FROM EXTERNAL PROVIDER;';
+    EXEC sp_executesql @sql;
+END
 
-EXEC('ALTER ROLE db_datareader ADD MEMBER ' + QUOTENAME(@principal) + ';');
-EXEC('ALTER ROLE db_datawriter ADD MEMBER ' + QUOTENAME(@principal) + ';');
+SET @sql = N'ALTER ROLE db_datareader ADD MEMBER ' + QUOTENAME(@principal) + N';';
+EXEC sp_executesql @sql;
+
+SET @sql = N'ALTER ROLE db_datawriter ADD MEMBER ' + QUOTENAME(@principal) + N';';
+EXEC sp_executesql @sql;
 "@
 
     Invoke-SqlBatch -ServerFqdn $sqlServerFqdn -Database $sqlDatabaseName -AccessToken $sqlAccessToken -Batches @($grantSql)
@@ -613,6 +667,24 @@ else {
 
     Push-Location $functionProject
     try {
+        # The Functions Worker SDK generates an internal WorkerExtensions.csproj under obj/ on every
+        # build, including `dotnet test`. Core Tools scans recursively for the project to publish and
+        # aborts with "Expected 1 .csproj or .fsproj but found 2" when it sees more than one. Clear
+        # the generated copies first; the build that publish runs recreates them.
+        $generatedProjects = @(
+            Get-ChildItem -Path (Join-Path $functionProject 'obj') -Recurse -Directory -Filter 'WorkerExtensions' -ErrorAction SilentlyContinue)
+        foreach ($generated in $generatedProjects) {
+            Remove-Item -LiteralPath $generated.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($generatedProjects.Count -gt 0) {
+            Write-Detail "Cleared $($generatedProjects.Count) generated WorkerExtensions project(s) from obj/."
+        }
+
+        $projectCount = @(Get-ChildItem -Path $functionProject -Recurse -Filter '*.csproj' -ErrorAction SilentlyContinue).Count
+        if ($projectCount -ne 1) {
+            throw "Expected exactly one .csproj under '$functionProject' but found $projectCount. Core Tools cannot pick a project to publish; remove the extra project files and retry."
+        }
+
         # No runtime flag needed: publish infers dotnet-isolated from the project file, and
         # local.settings.json is excluded by CopyToPublishDirectory=Never so no secret is uploaded.
         & func azure functionapp publish $functionAppName

@@ -500,6 +500,71 @@ input[type='checkbox']:focus-visible {
 
 /* Import page */
 
+.modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+
+.modes__tab {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.modes__tab:hover {
+  color: var(--text);
+  background: var(--bg-soft);
+}
+
+.modes__tab--active {
+  background: rgba(111, 139, 255, 0.16);
+  color: var(--accent);
+}
+
+.modes__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Manual entry */
+
+.manual__form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.manual__field {
+  min-width: 0;
+}
+
+.manual__submit {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .manual__form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .manual__submit {
+    grid-column: 1 / -1;
+  }
+}
+
 .drop {
   display: flex;
   flex-direction: column;
@@ -740,6 +805,78 @@ input[type='checkbox']:focus-visible {
   vertical-align: bottom;
 }
 
+.card__value--muted {
+  color: var(--text-muted);
+}
+
+/* Empty states */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 20px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 11px;
+  background: var(--bg-soft);
+}
+
+.empty__title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.empty__body {
+  color: var(--text-muted);
+  font-size: 13px;
+  max-width: 52ch;
+}
+
+.empty .button {
+  margin-top: 6px;
+  text-decoration: none;
+}
+
+.pill--danger {
+  color: var(--down);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.symbol__tag {
+  margin-left: 6px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.quote__tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.score__headText {
+  flex: 1;
+  min-width: 0;
+}
+
+.score__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alert__dot--failed {
+  background: var(--down);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18);
+}
+
+.alert__summary--failed {
+  color: var(--down);
+}
+
 /* Delta */
 
 .delta {
@@ -911,6 +1048,14 @@ input[type='checkbox']:focus-visible {
   justify-content: flex-end;
 }
 
+/* In a table cell the secondary percentage should sit under the amount, not beside it:
+   inline-flex would otherwise lay the block child out as a row and widen the column. */
+.table .num .delta:has(.subtle-inline) {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+}
+
 .symbol {
   display: block;
   font-weight: 700;
@@ -923,7 +1068,7 @@ input[type='checkbox']:focus-visible {
   font-size: 11px;
   font-weight: 400;
   white-space: normal;
-  max-width: 34ch;
+  max-width: 24ch;
 }
 
 .subtle-inline {

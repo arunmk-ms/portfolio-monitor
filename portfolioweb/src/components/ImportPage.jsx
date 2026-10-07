@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import Delta from './Delta.jsx'
+import ManualEntry from './ManualEntry.jsx'
 import {
   parsePositionsCsv,
   summarizeImport,
@@ -14,6 +15,30 @@ import {
 
 const MAX_BYTES = 5 * 1024 * 1024
 
+const MODES = [
+  { id: 'csv', label: 'Upload CSV' },
+  { id: 'manual', label: 'Add manually' },
+]
+
+function ModeSwitch({ mode, onChange }) {
+  return (
+    <div className="modes" role="tablist" aria-label="How to add holdings">
+      {MODES.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="tab"
+          aria-selected={mode === option.id}
+          className={`modes__tab ${mode === option.id ? 'modes__tab--active' : ''}`}
+          onClick={() => onChange(option.id)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function formatQuantity(value) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 4 })
 }
@@ -23,6 +48,7 @@ function formatMaybeCurrency(value) {
 }
 
 export default function ImportPage() {
+  const [mode, setMode] = useState('csv')
   const [file, setFile] = useState(null)
   const [result, setResult] = useState(null)
   const [fatalError, setFatalError] = useState(null)
@@ -123,8 +149,19 @@ export default function ImportPage() {
   const warnings = result?.issues.filter((issue) => issue.severity === 'warning') ?? []
   const notes = result?.issues.filter((issue) => issue.severity === 'info') ?? []
 
+  if (mode === 'manual') {
+    return (
+      <main className="app__main">
+        <ModeSwitch mode={mode} onChange={setMode} />
+        <ManualEntry />
+      </main>
+    )
+  }
+
   return (
     <main className="app__main">
+      <ModeSwitch mode={mode} onChange={setMode} />
+
       <section className="panel" aria-label="Upload positions">
         <div className="panel__head">
           <h2 className="panel__title">Import holdings from CSV</h2>

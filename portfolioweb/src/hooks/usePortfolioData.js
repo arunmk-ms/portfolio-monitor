@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchSnapshot } from '../lib/api.js'
+import { fetchDashboard } from '../lib/portfolioApi.js'
 
 export const REFRESH_INTERVALS = [
   { label: '15s', ms: 15000 },
@@ -66,7 +66,7 @@ export function usePortfolioData({ enabled }) {
     setIsRefreshing(true)
 
     try {
-      const next = await fetchSnapshot()
+      const next = await fetchDashboard()
       setSnapshot(next)
       setLastUpdatedAt(next.capturedAt)
       setError(null)
